@@ -1,47 +1,23 @@
-import { sql } from '../../lib/db';
+import { getDb } from '../../../lib/db';
 
 export default async function handler(req, res) {
-  const { phone } = req.query;
-  if (!phone || !phone.trim()) return res.status(200).json([]);
+  const { id } = req.query;
+  const sql = getDb();
 
-  // Get monthly summary grouped by year-month
-  const { rows: monthly } = await sql`
-    SELECT
-      TO_CHAR(TO_DATE(o.order_date, 'YYYY-MM-DD'), 'Month YYYY') AS month_label,
-      TO_CHAR(TO_DATE(o.order_date, 'YYYY-MM-DD'), 'YYYY-MM') AS month_key,
-      COUNT(DISTINCT o.id) AS order_count,
-      SUM(o.total_bill) AS total_spent,
-      SUM(oi.quantity_bought) AS total_sacks
-    FROM orders o
-    JOIN customers c ON o.customer_id = c.id
-    JOIN order_items oi ON oi.order_id = o.id
-    WHERE c.phone_number = ${phone.trim()}
-    GROUP BY month_label, month_key
-    ORDER BY month_key DESC
-  `;
+  if (req.method === 'PATCH') {
+    const { additionalStock } = req.body;
+    const qty = parseInt(additionalStock, 10);
+    if (isNaN(qty) || qty <= 0) return res.status(400).json({ success: false, message: 'Additional stock must be a positive number.' });
+    const rows = await sql`UPDATE products SET stock_quantity = stock_quantity + ${qty} WHERE id = ${id} RETURNING id`;
+    if (rows.length === 0) return res.status(404).json({ success: false, message: 'Product not found.' });
+    return res.status(200).json({ success: true });
+  }
 
-  // Get customer info
-  const { rows: custRows } = await sql`
-    SELECT customer_name, phone_number FROM customers WHERE phone_number = ${phone.trim()} LIMIT 1
-  `;
+  if (req.method === 'DELETE') {
+    const rows = await sql`DELETE FROM products WHERE id = ${id} RETURNING id`;
+    if (rows.length === 0) return res.status(404).json({ success: false, message: 'Product not found.' });
+    return res.status(200).json({ success: true });
+  }
 
-  // Get all orders detail for this customer
-  const { rows: orders } = await sql`
-    SELECT
-      o.id as "orderId", o.order_date, o.order_time, o.total_bill,
-      STRING_AGG(COALESCE(p.product_name, '[Deleted Brand]') || ' x' || oi.quantity_bought, ' | ') as description
-    FROM orders o
-    JOIN customers c ON o.customer_id = c.id
-    JOIN order_items oi ON oi.order_id = o.id
-    LEFT JOIN products p ON oi.product_id = p.id
-    WHERE c.phone_number = ${phone.trim()}
-    GROUP BY o.id, o.order_date, o.order_time, o.total_bill
-    ORDER BY o.id DESC
-  `;
-
-  return res.status(200).json({
-    customer: custRows[0] || null,
-    monthly,
-    orders,
-  });
+  res.status(405).end();
 }
